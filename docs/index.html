@@ -57,6 +57,7 @@
   </form>
 </section>
 <section id="nextActions" class="ticket" hidden><h2>Ждёт вашего действия</h2><ul id="actionList"></ul></section>
+<section id="publicFinal" class="ticket" hidden><h2>Общий финал</h2><div id="publicFinalContent"></div></section>
 <section id="wallet" class="ticket" hidden>
   <h2 id="name"></h2><small>Баланс</small><p class="amount" id="balance"></p>
   <p id="closed" hidden>Игра завершена.</p>
@@ -95,6 +96,7 @@
   <div class="actions"><button class="secondary" id="closeFinal">К панели ведущего</button></div>
   <h2 tabindex="-1" id="finalHeading">Итоги игры</h2>
   <div id="finalContent"></div>
+  <div id="goalReview"></div>
 </section>
 <aside id="roster" class="ticket" hidden><h2>Игроки и роли</h2><ul id="rosterList"></ul></aside>
 <section id="forms" class="ticket" hidden></section>
@@ -225,6 +227,59 @@ function renderFinal() {
     tr.insertCell().textContent=row.balance+' к.';
   }
   root.append(table);
+  renderGoalReview(bank.wallets,lastHostForms?.goals);
+}
+const goalLabels={complete:'Цели достигнуты',partial:'Цели достигнуты частично',missed:'Цели не достигнуты'};
+let goalReviewSnapshot;
+function renderGoalReview(wallets,goals) {
+  const players=wallets.filter(row=>row.joined).sort((a,b)=>a.id-b.id);
+  const snapshot=JSON.stringify([players.map(({id,name,surname})=>[id,name,surname]),goals]);
+  if (snapshot===goalReviewSnapshot) return;
+  goalReviewSnapshot=snapshot;
+  const root=byId('goalReview');
+  root.replaceChildren(line('h3','Цели персонажей'));
+  if (!goals) { root.append(line('p','Отметки станут доступны после обновления базы.')); return; }
+  if (!players.length) { root.append(line('p','Пока нет подключённых игроков.')); return; }
+  for (const row of players) {
+    const label=line('label',row.name+(row.surname?' · '+row.surname:''));
+    const select=document.createElement('select');
+    select.append(new Option('Ещё не оценено',''),...Object.entries(goalLabels).map(([value,title])=>new Option(title,value)));
+    select.value=goals[row.id] || '';
+    select.addEventListener('change',async ()=>{
+      select.disabled=true;
+      try {
+        await formsApi('goal_set',{role:row.id,result:select.value || null});
+        message('Итог по целям сохранён.');
+        await update();
+      } catch(error) {
+        select.value=goals[row.id] || '';
+        message(error.message);
+      } finally { select.disabled=false; }
+    });
+    label.append(select);
+    root.append(label);
+  }
+}
+let publicFinalSnapshot;
+async function renderPublicFinal(closed) {
+  byId('publicFinal').hidden=!closed;
+  if (!closed) return;
+  const data=await formsApi('goal_public');
+  const snapshot=JSON.stringify(data);
+  if (snapshot===publicFinalSnapshot) return;
+  publicFinalSnapshot=snapshot;
+  const root=byId('publicFinalContent');
+  root.replaceChildren();
+  if (data?.votes) root.append(line('p',finalSummary(true,{votes:data.votes,forms:[]}).contest));
+  if (!data?.results?.length) { root.append(line('p','Ведущий ещё не опубликовал отметки о целях.')); return; }
+  for (const [value,title] of Object.entries(goalLabels)) {
+    const matching=data.results.filter(row=>row.result===value);
+    if (!matching.length) continue;
+    root.append(line('h3',title));
+    const list=document.createElement('ul');
+    list.append(...matching.map(row=>line('li',row.name)));
+    root.append(list);
+  }
 }
 function setFinalScreen(open) {
   finalOpen=open;
@@ -473,6 +528,7 @@ async function update() {
       formsState=undefined;
       renderNextActions([]);
     }
+    if (hosted && !hostMode) await renderPublicFinal(state.closed);
   } catch (error) { message(error.message); }
   finally { refreshing = false; }
 }
