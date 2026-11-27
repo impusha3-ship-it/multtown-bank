@@ -451,7 +451,7 @@ async function update() {
       options('role',state.roles,'Выберите свою роль');
       if (state.wheel) {
         const occupied = new Set(state.recipients.map(row=>row.id));
-        wheelNames = state.roles.filter(row=>!occupied.has(row.id)).map(row=>row.name);
+        wheelNames = (state.drawPool || state.roles.filter(row=>!occupied.has(row.id))).map(row=>row.name);
         if (!spinning) showWheelNames(wheelNames,0);
         byId('available').textContent = 'Свободных ролей: '+state.available;
         byId('spinForm').hidden = state.closed || state.available === 0;
