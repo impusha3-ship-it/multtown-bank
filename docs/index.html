@@ -7,6 +7,9 @@
 *{box-sizing:border-box}body{margin:0;background:#111e38;color:#182840;font:16px/1.5 system-ui,sans-serif}main{max-width:560px;margin:auto;padding:30px 16px 48px}header{color:#fff3d5;padding:10px 0 23px}h1,h2,p{margin:0 0 12px}h1{font:700 clamp(32px,8vw,52px)/1 Georgia,serif;letter-spacing:-.035em}h2{font-size:22px}.ticket{border-top:8px dotted #f4c24b;background:#fff3d5;padding:22px;border-radius:16px;margin-bottom:14px;box-shadow:0 5px 0 #0b1428}label{display:block;font-weight:650;margin-top:12px}select,input,button{font:inherit;min-height:46px;border-radius:9px}select,input{width:100%;border:1px solid #737d8c;padding:9px 12px;background:#fffdf7;color:#182840}button{background:#f4c24b;border:0;padding:9px 14px;font-weight:750;color:#182840;cursor:pointer}button:disabled{opacity:.55}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}.secondary{background:#e1e4ef}small{display:block}.amount{font:700 52px/1 Georgia,serif;font-variant-numeric:tabular-nums;margin:14px 0 19px}#status{color:#fff3d5;min-height:1.5em}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:8px 3px;border-bottom:1px solid #a39a88}td:last-child,th:last-child{text-align:right;white-space:nowrap}details li{margin:9px 0;overflow-wrap:anywhere}summary{cursor:pointer;font-weight:700}a{color:inherit}
 </style>
 <style>
+#nextActions h2{margin-bottom:6px}#nextActions ul{list-style:none;margin:0;padding:0}#nextActions li+li{margin-top:6px}#nextActions button{width:100%;text-align:left}#finalReport h3{margin:16px 0 3px;color:#324b70;font-size:15px;text-transform:uppercase;letter-spacing:.035em}#finalReport td:first-child{overflow-wrap:anywhere}#finalReport .final-winner{font:700 32px/1.1 Georgia,serif}#finalReport .actions{margin:0 0 16px}
+</style>
+<style>
 #forms input,#forms textarea,#hostForms textarea{width:100%;font:inherit;padding:8px;border-radius:8px;border:1px solid #737d8c;background:#fffdf7}#forms textarea{min-height:64px;resize:vertical}#forms details,#hostForms details{margin:12px 0}#forms dd,#hostForms dd{margin:0 0 8px;white-space:pre-wrap;overflow-wrap:anywhere}#forms dt,#hostForms dt{font-weight:650}#forms .actions{margin-bottom:12px}
 </style>
 <style>
@@ -53,6 +56,7 @@
     <div class="actions"><button>Войти</button></div>
   </form>
 </section>
+<section id="nextActions" class="ticket" hidden><h2>Ждёт вашего действия</h2><ul id="actionList"></ul></section>
 <section id="wallet" class="ticket" hidden>
   <h2 id="name"></h2><small>Баланс</small><p class="amount" id="balance"></p>
   <p id="closed" hidden>Игра завершена.</p>
@@ -77,7 +81,7 @@
 </section>
 <section id="host" class="ticket" hidden>
   <h2>Ведущий</h2><p id="summary"></p>
-  <div class="actions"><button id="finish">Завершить игру</button><button class="secondary refresh">Обновить</button></div>
+  <div class="actions"><button id="finish">Завершить игру</button><button class="secondary" id="openFinal">Экран финала</button><button class="secondary refresh">Обновить</button></div>
   <div id="requests"></div>
   <table><thead><tr><th>№</th><th>Персонаж</th><th>Остаток</th></tr></thead><tbody id="standings"></tbody></table>
   <details id="codes"><summary>Коды персонажей</summary><p>Раздайте каждому игроку только его код.</p><ol id="invites"></ol></details>
@@ -86,6 +90,11 @@
     <p id="roleStory"></p>
     <h2>Сводка игры</h2><p id="newsEmpty">Пока событий нет.</p><ol id="news"></ol>
   </div>
+</section>
+<section id="finalReport" class="ticket" hidden>
+  <div class="actions"><button class="secondary" id="closeFinal">К панели ведущего</button></div>
+  <h2 tabindex="-1" id="finalHeading">Итоги игры</h2>
+  <div id="finalContent"></div>
 </section>
 <aside id="roster" class="ticket" hidden><h2>Игроки и роли</h2><ul id="rosterList"></ul></aside>
 <section id="forms" class="ticket" hidden></section>
@@ -174,6 +183,76 @@ function formSection(title, root) {
   return details;
 }
 let formsState;
+let finalOpen = false;
+let lastHostState;
+let lastHostForms;
+function finalSummary(closed, documents) {
+  const votes=documents?.votes || [];
+  const count=id=>votes.filter(vote=>vote.id===id).length;
+  const first=count(3);
+  const second=count(4);
+  const winner=first>second?'Синдирелла':'Белоснежка';
+  const contest=!documents?'Голосование недоступно':!votes.length?'Голосов пока нет':first===second?'Ничья — результат объявляет ведущий':closed?'Победительница — '+winner:'Лидирует '+winner;
+  const will=!documents?'Нет данных о завещании':documents.will?.action==='present'?'Завещание предъявлено — студия достаётся Багзу Бани.':documents.will?.action==='destroy'?'Завещание уничтожено — контроль переходит к Галлозу.':closed?'Завещание не предъявлено через сайт. По правилам контроль переходит к Галлозу, если ведущий не получил завещание вживую.':'Завещание пока не предъявлено.';
+  const route=documents?.forms.find(form=>form.kind==='route');
+  const pavilion=!documents?'Нет данных о соглашении.':route?.signatures.filter(row=>row.signed).length===2?'Оба подписали — главный павильон сохраняется.':closed?'Две подписи под запасным маршрутом не собраны.':'Соглашение ещё не подписано обеими сторонами.';
+  return {contest,first,second,will,pavilion};
+}
+function renderFinal() {
+  if (!lastHostState) return;
+  const bank=lastHostState;
+  const root=byId('finalContent');
+  const summary=finalSummary(bank.closed,lastHostForms);
+  root.replaceChildren(
+    line('p',bank.closed?'Игра завершена.':'Предварительные итоги. Игровые действия ещё открыты.'),
+    line('h3','Конкурс «Мисс мультяшка»'),
+    line('p',summary.contest)
+  );
+  root.lastElementChild.className='final-winner';
+  if (lastHostForms) root.append(line('p','Синдирелла — '+summary.first+' · Белоснежка — '+summary.second+' · проголосовало '+(summary.first+summary.second)+' из 3.'));
+  root.append(line('h3','Завещание'),line('p',summary.will),line('h3','Съёмочный павильон'),line('p',summary.pavilion),line('h3','Остатки денег'));
+  const table=document.createElement('table');
+  const head=table.createTHead().insertRow();
+  for (const name of ['Персонаж и игрок','Остаток']) {
+    const cell=line('th',name);
+    cell.scope='col';
+    head.append(cell);
+  }
+  const body=table.createTBody();
+  for (const row of bank.wallets) {
+    const tr=body.insertRow();
+    tr.insertCell().textContent=row.name+' · '+(row.surname || (row.joined?'фамилия не указана':'роль не занята'));
+    tr.insertCell().textContent=row.balance+' к.';
+  }
+  root.append(table);
+}
+function setFinalScreen(open) {
+  finalOpen=open;
+  byId('host').hidden=open;
+  byId('forms').hidden=open || !lastHostForms;
+  byId('finalReport').hidden=!open;
+  if (open) {
+    renderFinal();
+    byId('finalHeading').focus();
+    byId('finalReport').scrollIntoView({block:'start'});
+  } else byId('openFinal').focus();
+}
+byId('openFinal').addEventListener('click',()=>setFinalScreen(true));
+byId('closeFinal').addEventListener('click',()=>setFinalScreen(false));
+function renderNextActions(tasks) {
+  byId('nextActions').hidden=!tasks.length;
+  byId('actionList').replaceChildren(...tasks.map(({title,details})=>{
+    const li=document.createElement('li');
+    const button=line('button',title);
+    button.addEventListener('click',()=>{
+      details.open=true;
+      details.querySelector('summary').focus();
+      details.scrollIntoView({block:'start'});
+    });
+    li.append(button);
+    return li;
+  }));
+}
 function renderForms(bank, data) {
   const root=byId('forms');
   const player=bank.player;
@@ -182,7 +261,8 @@ function renderForms(bank, data) {
   formsState=signature;
   const opened=new Set([...root.querySelectorAll('details[open]')].map(node=>node.firstChild.textContent));
   root.replaceChildren(line('h2',bank.wallets?'Бланки и результаты конкурса':'Бланки и подписи'));
-  if (!data) { root.hidden=true; return; }
+  if (!data) { root.hidden=true; renderNextActions([]); return; }
+  const tasks=[];
   const recovery=formSection('Код для входа с другого устройства',root);
   if (bank.wallets) {
     if (!data.recovery.length) recovery.append(line('p','Ещё никто не получил роль.'));
@@ -209,8 +289,11 @@ function renderForms(bank, data) {
     if ([7,11,12].includes(player.id)) {
       const details=formSection('Голос судьи',root);
       if (data.vote) details.append(line('p','Ваш голос: '+(data.vote===3?'Синдирелла':'Белоснежка')+'.'));
-      else if (!bank.closed) for (const [candidate,name] of [[3,'Синдирелла'],[4,'Белоснежка']]) {
-        details.append(formButton(name,'vote',{candidate},'Подписать её бланк? Голос окончательный.'));
+      else if (!bank.closed) {
+        tasks.push({title:'Проголосовать за финалистку',details});
+        for (const [candidate,name] of [[3,'Синдирелла'],[4,'Белоснежка']]) {
+          details.append(formButton(name,'vote',{candidate},'Подписать её бланк? Голос окончательный.'));
+        }
       }
     }
     if (!bank.closed && bank.items?.some(item=>item.id===1)) {
@@ -254,6 +337,7 @@ function renderForms(bank, data) {
         if (form.submitted) details.append(line('p','Передано ведущему.'));
         else if (!bank.closed && form.signatures.every(row=>row.signed)) {
           details.append(formButton('Передать ведущему','submit',{kind:spec.id}));
+          tasks.push({title:'Передать ведущему: '+spec.title,details});
         }
       }
     }
@@ -261,11 +345,15 @@ function renderForms(bank, data) {
       const details=formSection('На подпись: '+form.title,root);
       details.append(documentFields(form.fields,form.body));
       if (row.signed) details.append(line('p','Вы подписали бланк.'));
-      else if (!bank.closed) details.append(formButton('Подписать','sign',{owner:form.owner,kind:form.kind,slot:row.slot,revision:form.revision},'Подписать эту версию бланка?'));
+      else if (!bank.closed) {
+        details.append(formButton('Подписать','sign',{owner:form.owner,kind:form.kind,slot:row.slot,revision:form.revision},'Подписать эту версию бланка?'));
+        tasks.unshift({title:'Подписать: '+form.title,details});
+      }
     }
   }
   root.querySelectorAll('details').forEach(node=>{node.open=opened.has(node.firstChild.textContent);});
-  root.hidden=root.children.length===1;
+  root.hidden=root.children.length===1 || (Boolean(bank.wallets) && finalOpen);
+  renderNextActions(tasks);
 }
 function inventory(state, recipients) {
   byId('story').textContent = state.story || 'История пока не загружена ведущим.';
@@ -321,7 +409,7 @@ async function update() {
     byId('entry').hidden = Boolean(state.player || state.wallets || state.wheel);
     byId('wheelEntry').hidden = !state.wheel || Boolean(state.wallets) || Boolean(state.player && !spinning);
     byId('wallet').hidden = !state.player || Boolean(state.wallets) || spinning;
-    byId('host').hidden = !state.wallets;
+    byId('host').hidden = !state.wallets || finalOpen;
     byId('character').hidden = !state.player || !Array.isArray(state.items) || Boolean(state.wallets) || spinning;
     byId('roster').hidden = !state.player || !state.wheel || spinning;
     document.querySelector('main').classList.toggle('withRoster',!byId('roster').hidden);
@@ -370,11 +458,20 @@ async function update() {
       }
       if (state.closed) message('Игра завершена. Новые игроки не подключаются.');
     }
-    if (hosted && (state.wallets || (state.player && !spinning))) renderForms(state,await formsApi('state'));
+    if (hosted && (state.wallets || (state.player && !spinning))) {
+      const documents=await formsApi('state');
+      renderForms(state,documents);
+      if (state.wallets) {
+        lastHostState=state;
+        lastHostForms=documents;
+        if (finalOpen) renderFinal();
+      }
+    }
     else if (!state.player && !state.wallets) {
       byId('forms').hidden=true;
       byId('forms').replaceChildren();
       formsState=undefined;
+      renderNextActions([]);
     }
   } catch (error) { message(error.message); }
   finally { refreshing = false; }
@@ -474,6 +571,9 @@ action('finish','click',async () => {
   if (confirm('Закрыть переводы и зафиксировать остатки?')) {
     await api('finish',{});
     message('Результаты зафиксированы.');
+    finalOpen=true;
+    await update();
+    setFinalScreen(true);
   }
 });
 document.querySelectorAll('.refresh').forEach(button=>button.addEventListener('click',update));
