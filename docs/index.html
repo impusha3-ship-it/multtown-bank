@@ -26,9 +26,23 @@
     <div class="actions"><button id="send">Перевести</button><button type="button" class="secondary refresh">Обновить</button></div>
   </form>
 </section>
+<section id="character" class="ticket" hidden>
+  <details><summary>История и задачи</summary><p id="story" style="white-space:pre-wrap"></p></details>
+  <h2>Предметы</h2>
+  <div id="items"></div>
+  <form id="itemForm" hidden>
+    <label for="item">Предмет</label><select id="item" required></select>
+    <label for="target">Другой персонаж</label><select id="target" required></select>
+    <label for="itemAction">Действие</label>
+    <select id="itemAction"><option value="show">Показать</option><option value="give">Передать</option><option value="use">Применить через ведущего</option></select>
+    <div class="actions"><button>Подтвердить</button></div>
+  </form>
+  <details><summary>Действия с предметами</summary><ul id="events"></ul></details>
+</section>
 <section id="host" class="ticket" hidden>
   <h2>Ведущий</h2><p id="summary"></p>
   <div class="actions"><button id="finish">Завершить игру</button><button class="secondary refresh">Обновить</button></div>
+  <div id="requests"></div>
   <table><thead><tr><th>№</th><th>Персонаж</th><th>Остаток</th></tr></thead><tbody id="standings"></tbody></table>
   <details><summary>Коды персонажей</summary><p>Раздайте каждому игроку только его код.</p><ol id="invites"></ol></details>
 </section>
@@ -70,6 +84,41 @@ function options(id, rows, hint) {
   select.replaceChildren(new Option(hint, ''), ...rows.map(row => new Option(row.id+'. '+row.name,row.id)));
   if (rows.some(row => String(row.id) === selected)) select.value = selected;
 }
+const requestId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
+function line(tag,text) {
+  const element = document.createElement(tag);
+  element.textContent = text;
+  return element;
+}
+function inventory(state, recipients) {
+  byId('story').textContent = state.story || 'История пока не загружена ведущим.';
+  byId('items').replaceChildren(...(state.items.length ? state.items.map(item => line('p',item.name+' — '+item.body)) : [line('p','Сейчас у вас нет предметов.')]));
+  byId('itemForm').hidden = state.closed || !state.items.length || !recipients.length;
+  options('item',state.items,'Выберите предмет');
+  options('target',recipients,'Выберите персонажа');
+  byId('events').replaceChildren(...state.events.map(event => {
+    const verb = {give:'передача',show:'показ',use:'применение'}[event.action];
+    const status = {done:'',pending:' · ждёт ведущего',approved:' · одобрено ведущим',declined:' · отклонено'}[event.status];
+    return line('li',event.item+' · '+verb+' · '+event.actor+' → '+event.target+status+(event.body?' · '+event.body:''));
+  }));
+}
+function hostRequests(rows) {
+  byId('requests').replaceChildren(...rows.map(row => {
+    const block = document.createElement('div');
+    block.append(line('p',row.actor+' → '+row.target+' · '+row.item));
+    for (const [decision,title] of [['approve','Одобрить'],['decline','Отклонить']]) {
+      const button = line('button',title);
+      button.addEventListener('click',async () => {
+        button.disabled = true;
+        try { await api('resolve',{event:row.id,decision}); await update(); }
+        catch (error) { message(error.message); }
+        finally { button.disabled = false; }
+      });
+      block.append(button);
+    }
+    return block;
+  }));
+}
 let refreshing = false;
 async function update() {
   if (refreshing) return;
@@ -79,7 +128,9 @@ async function update() {
     byId('entry').hidden = Boolean(state.player || state.wallets);
     byId('wallet').hidden = !state.player || Boolean(state.wallets);
     byId('host').hidden = !state.wallets;
+    byId('character').hidden = !state.player || !Array.isArray(state.items) || Boolean(state.wallets);
     if (state.wallets) {
+      hostRequests(state.requests || []);
       byId('summary').textContent = (state.closed?'Игра завершена. ':'')+'Подключено '+state.wallets.filter(row=>row.joined).length+' из 27. Переводов: '+state.count+'.';
       byId('finish').hidden = state.closed;
       byId('standings').replaceChildren(...state.wallets.map(row => {
@@ -101,6 +152,7 @@ async function update() {
       byId('pay').hidden=state.closed;
       const recipients = state.recipients.filter(row=>row.id!==state.player.id).sort((a,b)=>a.id-b.id);
       options('recipient',recipients,recipients.length?'Выберите персонажа':'Ждём других игроков');
+      if (Array.isArray(state.items)) inventory(state,recipients);
     } else {
       options('role',state.roles,'Выберите свою роль');
       if (state.closed) message('Игра завершена. Новые игроки не подключаются.');
@@ -125,13 +177,26 @@ action('login','submit',async () => {
   message('Кошелёк открыт.');
 });
 let pending;
+let pendingItem;
+action('itemForm','submit',async () => {
+  const item = Number(byId('item').value);
+  const target = Number(byId('target').value);
+  const operation = byId('itemAction').value;
+  if (!confirm('Подтвердить действие с предметом?')) return;
+  if (pendingItem?.item !== item || pendingItem?.target !== target || pendingItem?.operation !== operation) {
+    pendingItem = {item,target,operation,key:requestId()};
+  }
+  await api(operation,pendingItem);
+  pendingItem = undefined;
+  message(operation === 'use' ? 'Запрос отправлен ведущему.' : 'Действие выполнено.');
+});
 action('pay','submit',async () => {
   const select=byId('recipient');
   const recipient=Number(select.value);
   const amount=Number(byId('amount').value);
   if (!confirm('Перевести '+amount+' к. персонажу «'+select.selectedOptions[0].textContent+'»?')) return;
   if (pending?.recipient!==recipient || pending?.amount!==amount) {
-    const key=Array.from(crypto.getRandomValues(new Uint8Array(16)), byte=>byte.toString(16).padStart(2,'0')).join('');
+    const key=requestId();
     pending={recipient,amount,key};
   }
   await api('pay',pending);
