@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Касса Мульттауна</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111e38;color:#182840;font:16px/1.5 system-ui,sans-serif}main{max-width:560px;margin:auto;padding:30px 16px 48px}header{color:#fff3d5;padding:10px 0 23px}h1,h2,p{margin:0 0 12px}h1{font:700 clamp(32px,8vw,52px)/1 Georgia,serif;letter-spacing:-.035em}h2{font-size:22px}.ticket{border-top:8px dotted #f4c24b;background:#fff3d5;padding:22px;border-radius:16px;margin-bottom:14px;box-shadow:0 5px 0 #0b1428}label{display:block;font-weight:650;margin-top:12px}select,input,button{font:inherit;min-height:46px;border-radius:9px}select,input{width:100%;border:1px solid #737d8c;padding:9px 12px;background:#fffdf7;color:#182840}button{background:#f4c24b;border:0;padding:9px 14px;font-weight:750;color:#182840;cursor:pointer}button:disabled{opacity:.55}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}.secondary{background:#e1e4ef}small{display:block}.amount{font:700 52px/1 Georgia,serif;font-variant-numeric:tabular-nums;margin:14px 0 19px}#status{color:#fff3d5;min-height:1.5em}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:8px 3px;border-bottom:1px solid #a39a88}td:last-child,th:last-child{text-align:right;white-space:nowrap}details li{margin:9px 0;overflow-wrap:anywhere}summary{cursor:pointer;font-weight:700}a{color:inherit}
+</style>
+<main>
+<header><h1>Касса Мульттауна</h1></header>
+<p id="status" role="status"></p>
+<section id="entry" class="ticket" hidden>
+  <h2>Вход в кошелёк</h2>
+  <form id="login">
+    <label for="role">Персонаж</label><select id="role" required></select>
+    <label for="code">Код персонажа</label><input id="code" required autocomplete="off" spellcheck="false" autocapitalize="none">
+    <div class="actions"><button>Войти</button></div>
+  </form>
+</section>
+<section id="wallet" class="ticket" hidden>
+  <h2 id="name"></h2><small>Баланс</small><p class="amount" id="balance"></p>
+  <p id="closed" hidden>Игра завершена.</p>
+  <form id="pay">
+    <label for="recipient">Кому перевести</label><select id="recipient" required></select>
+    <label for="amount">Сумма в игровых к.</label><input id="amount" type="number" min="1" step="1" inputmode="numeric" required>
+    <div class="actions"><button id="send">Перевести</button><button type="button" class="secondary refresh">Обновить</button></div>
+  </form>
+</section>
+<section id="host" class="ticket" hidden>
+  <h2>Ведущий</h2><p id="summary"></p>
+  <div class="actions"><button id="finish">Завершить игру</button><button class="secondary refresh">Обновить</button></div>
+  <table><thead><tr><th>№</th><th>Персонаж</th><th>Остаток</th></tr></thead><tbody id="standings"></tbody></table>
+  <details><summary>Коды персонажей</summary><p>Раздайте каждому игроку только его код.</p><ol id="invites"></ol></details>
+</section>
+</main>
+<script src="./config.js"></script>
+<script>
+const hosted = window.MULTTOWN_CONFIG;
+const byId = id => document.getElementById(id);
+const params = new URLSearchParams(location.hash.slice(1));
+const admin = params.get('host') || sessionStorage.getItem('multtownHost');
+if (params.has('host')) {
+  sessionStorage.setItem('multtownHost', admin);
+  history.replaceState(null, '', location.pathname);
+}
+const message = text => { byId('status').textContent = text; };
+async function api(path, body) {
+  if (hosted) {
+    const response = await fetch(hosted.url+'/rest/v1/rpc/multtown_bank', {
+      method:'POST',
+      headers:{apikey:hosted.key,'Content-Type':'application/json'},
+      body:JSON.stringify({action:path, credential:admin || localStorage.getItem('multtownWallet'), payload:body || {}})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.code === '22P02' ? 'Проверьте формат кода или суммы.' : data.message || 'Касса временно недоступна.');
+    if (path === 'login') localStorage.setItem('multtownWallet',data.session);
+    return data;
+  }
+  const headers = {};
+  if (admin) headers.Authorization = 'Bearer ' + admin;
+  if (body) headers['Content-Type'] = 'application/json';
+  const response = await fetch('/api/'+path, {headers, method:body?'POST':'GET', body:body?JSON.stringify(body):undefined});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error);
+  return data;
+}
+function options(id, rows, hint) {
+  const select = byId(id);
+  const selected = select.value;
+  select.replaceChildren(new Option(hint, ''), ...rows.map(row => new Option(row.id+'. '+row.name,row.id)));
+  if (rows.some(row => String(row.id) === selected)) select.value = selected;
+}
+let refreshing = false;
+async function update() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    const state = await api('state');
+    byId('entry').hidden = Boolean(state.player || state.wallets);
+    byId('wallet').hidden = !state.player || Boolean(state.wallets);
+    byId('host').hidden = !state.wallets;
+    if (state.wallets) {
+      byId('summary').textContent = (state.closed?'Игра завершена. ':'')+'Подключено '+state.wallets.filter(row=>row.joined).length+' из 27. Переводов: '+state.count+'.';
+      byId('finish').hidden = state.closed;
+      byId('standings').replaceChildren(...state.wallets.map(row => {
+        const tr = document.createElement('tr');
+        for (const value of [row.id, row.name+(row.joined?'':' · не вошёл'), row.balance+' к.']) tr.insertCell().textContent=value;
+        return tr;
+      }));
+      if (!byId('invites').children.length) {
+        for (const row of state.invitations) {
+          const item = document.createElement('li');
+          item.textContent = row.name+' — '+row.code;
+          byId('invites').append(item);
+        }
+      }
+    } else if (state.player) {
+      byId('name').textContent=state.player.name;
+      byId('balance').textContent=state.player.balance+' к.';
+      byId('closed').hidden=!state.closed;
+      byId('pay').hidden=state.closed;
+      const recipients = state.recipients.filter(row=>row.id!==state.player.id).sort((a,b)=>a.id-b.id);
+      options('recipient',recipients,recipients.length?'Выберите персонажа':'Ждём других игроков');
+    } else {
+      options('role',state.roles,'Выберите свою роль');
+      if (state.closed) message('Игра завершена. Новые игроки не подключаются.');
+    }
+  } catch (error) { message(error.message); }
+  finally { refreshing = false; }
+}
+function action(id, event, work) {
+  byId(id).addEventListener(event,async e => {
+    e.preventDefault();
+    const button = e.submitter || e.currentTarget;
+    if (button.disabled) return;
+    button.disabled=true;
+    try { await work(); await update(); }
+    catch (error) { message(error.message); }
+    finally { button.disabled=false; }
+  });
+}
+action('login','submit',async () => {
+  await api('login',{role:Number(byId('role').value),code:byId('code').value});
+  byId('login').reset();
+  message('Кошелёк открыт.');
+});
+let pending;
+action('pay','submit',async () => {
+  const select=byId('recipient');
+  const recipient=Number(select.value);
+  const amount=Number(byId('amount').value);
+  if (!confirm('Перевести '+amount+' к. персонажу «'+select.selectedOptions[0].textContent+'»?')) return;
+  if (pending?.recipient!==recipient || pending?.amount!==amount) {
+    const key=Array.from(crypto.getRandomValues(new Uint8Array(16)), byte=>byte.toString(16).padStart(2,'0')).join('');
+    pending={recipient,amount,key};
+  }
+  await api('pay',pending);
+  pending=undefined;
+  byId('amount').value='';
+  message('Перевод выполнен.');
+});
+action('finish','click',async () => {
+  if (confirm('Закрыть переводы и зафиксировать остатки?')) {
+    await api('finish',{});
+    message('Результаты зафиксированы.');
+  }
+});
+document.querySelectorAll('.refresh').forEach(button=>button.addEventListener('click',update));
+if (hosted) {
+  update();
+  setInterval(update,5000);
+} else {
+  message('Касса готовится к открытию. Общая база ещё не подключена.');
+}
+</script>
+</html>
