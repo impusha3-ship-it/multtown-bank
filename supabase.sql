@@ -21,6 +21,28 @@ create table if not exists multtown.transfer (
   amount integer not null check (amount > 0),
   primary key (sender, key)
 );
+create table if not exists multtown.story (
+  wallet integer primary key references multtown.wallet,
+  body text not null
+);
+create table if not exists multtown.item (
+  id integer primary key,
+  owner integer not null references multtown.wallet,
+  name text not null,
+  body text not null,
+  usable boolean not null default false,
+  spent boolean not null default false
+);
+create table if not exists multtown.item_event (
+  id uuid primary key default gen_random_uuid(),
+  item integer not null references multtown.item,
+  actor integer not null references multtown.wallet,
+  target integer references multtown.wallet,
+  action text not null check (action in ('give','show','use')),
+  status text not null check (status in ('done','pending','approved','declined')),
+  created timestamptz not null default now()
+);
+alter table multtown.item_event add column if not exists request_key uuid unique;
 insert into multtown.game (id) values (1) on conflict do nothing;
 insert into multtown.wallet (id,name,balance) values
   (1,'Джонни Хенкс',0),(2,'Генри Бардубаба',20),(3,'Мисс Синдирелла',70),
@@ -43,7 +65,10 @@ declare
   target integer;
   amount_due integer;
   request_key uuid;
+  item_key uuid;
   is_host boolean;
+  item_row multtown.item;
+  event_row multtown.item_event;
 begin
   if action = 'state' then
     select * into game_row from multtown.game;
@@ -83,8 +108,43 @@ begin
     update multtown.wallet set balance = balance + amount_due where id = target;
     insert into multtown.transfer values (me.id,request_key,target,amount_due);
     return '{}'::jsonb;
+  elsif action in ('give','show','use') then
+    if me.id is null then raise exception 'Войдите в кошелёк.'; end if;
+    if game_row.closed then raise exception 'Игра завершена.'; end if;
+    item_key := (payload->>'key')::uuid;
+    if item_key is null then raise exception 'Обновите страницу.'; end if;
+    select * into event_row from multtown.item_event where item_event.request_key = item_key;
+    if found then
+      if event_row.actor <> me.id then raise exception 'Запрос уже использован.'; end if;
+      return '{}'::jsonb;
+    end if;
+    target := (payload->>'target')::integer;
+    if target is null or target = me.id or not exists (select 1 from multtown.wallet where id = target and session is not null) then
+      raise exception 'Выберите другого подключённого игрока.';
+    end if;
+    select * into item_row from multtown.item where id = (payload->>'item')::integer and owner = me.id and not spent;
+    if not found then raise exception 'Предмет больше недоступен.'; end if;
+    if exists (select 1 from multtown.item_event where item = item_row.id and status = 'pending') then
+      raise exception 'Ведущий ещё рассматривает применение этого предмета.';
+    end if;
+    if action = 'use' and not item_row.usable then raise exception 'Этот предмет можно показать или передать.'; end if;
+    if action = 'give' then update multtown.item set owner = target where id = item_row.id; end if;
+    insert into multtown.item_event (item,actor,target,action,status,request_key)
+    values (item_row.id,me.id,target,action,case when action = 'use' then 'pending' else 'done' end,item_key);
+    return '{}'::jsonb;
+  elsif action = 'resolve' then
+    if not is_host then raise exception 'Только для ведущего.'; end if;
+    if game_row.closed then raise exception 'Игра завершена.'; end if;
+    update multtown.item_event
+    set status = case when payload->>'decision' = 'approve' then 'approved' else 'declined' end
+    where id = (payload->>'event')::uuid and status = 'pending'
+    returning * into event_row;
+    if not found then raise exception 'Запрос уже обработан.'; end if;
+    if event_row.status = 'approved' then update multtown.item set spent = true where id = event_row.item; end if;
+    return '{}'::jsonb;
   elsif action = 'finish' then
     if not is_host then raise exception 'Только для ведущего.'; end if;
+    update multtown.item_event set status = 'declined' where status = 'pending';
     update multtown.game set closed = true;
     return '{}'::jsonb;
   elsif action is distinct from 'state' then
@@ -95,6 +155,9 @@ begin
     return jsonb_build_object(
       'closed',game_row.closed,
       'count',(select count(*) from multtown.transfer),
+      'requests',coalesce((select jsonb_agg(jsonb_build_object('id',e.id,'item',i.name,'actor',a.name,'target',b.name) order by e.created)
+        from multtown.item_event e join multtown.item i on i.id=e.item join multtown.wallet a on a.id=e.actor
+        join multtown.wallet b on b.id=e.target where e.status='pending'),'[]'::jsonb),
       'wallets',(select jsonb_agg(jsonb_build_object('id',id,'name',name,'balance',balance,'joined',session is not null) order by balance desc,id) from multtown.wallet),
       'invitations',(select jsonb_agg(jsonb_build_object('id',id,'name',name,'code',code) order by id) from multtown.wallet)
     );
@@ -102,6 +165,17 @@ begin
   return jsonb_build_object(
     'closed',game_row.closed,
     'player',case when me.id is not null then jsonb_build_object('id',me.id,'name',me.name,'balance',me.balance) end,
+    'story',(select body from multtown.story where wallet=me.id),
+    'items',coalesce((select jsonb_agg(jsonb_build_object('id',id,'name',name,'body',body,'usable',usable) order by id)
+      from multtown.item where owner=me.id and not spent),'[]'::jsonb),
+    'events',coalesce((select jsonb_agg(row_data) from (
+      select e.action,e.status,i.name as item,a.name as actor,b.name as target,
+        case when e.action='show' and e.target=me.id then i.body end as body
+      from multtown.item_event e join multtown.item i on i.id=e.item
+      join multtown.wallet a on a.id=e.actor join multtown.wallet b on b.id=e.target
+      where e.actor=me.id or e.target=me.id
+      order by e.created desc limit 20
+    ) row_data),'[]'::jsonb),
     'roles',(select jsonb_agg(jsonb_build_object('id',id,'name',name) order by id) from multtown.wallet),
     'recipients',coalesce((select jsonb_agg(jsonb_build_object('id',id,'name',name) order by id) from multtown.wallet where session is not null),'[]'::jsonb)
   );
