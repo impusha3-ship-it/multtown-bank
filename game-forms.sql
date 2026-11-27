@@ -42,6 +42,10 @@ create table if not exists multtown.vote (
   judge integer primary key references multtown.wallet check (judge in (7,11,12)),
   candidate integer not null references multtown.wallet check (candidate in (3,4))
 );
+create table if not exists multtown.goal_result (
+  wallet integer primary key references multtown.wallet,
+  result text not null check (result in ('complete','partial','missed'))
+);
 create table if not exists multtown.will_decision (
   id integer primary key check (id=1),
   owner integer not null references multtown.wallet,
@@ -87,6 +91,28 @@ begin
   else select * into g from multtown.game where id=1 for update; end if;
   host := coalesce(credential = g.host,false);
   select id into me from multtown.wallet where session=credential;
+  if op='goal_public' then
+    return jsonb_build_object('closed',g.closed,
+      'votes',case when g.closed then (select coalesce(jsonb_agg(jsonb_build_object('id',candidate)),'[]') from multtown.vote) end,
+      'results',case when g.closed then
+      (select coalesce(jsonb_agg(jsonb_build_object('id',w.id,'name',w.name,'result',r.result) order by w.id),'[]')
+       from multtown.goal_result r join multtown.wallet w on w.id=r.wallet where w.session is not null)
+      else '[]'::jsonb end);
+  end if;
+  if op='goal_set' then
+    if not host then raise exception 'Только для ведущего.'; end if;
+    chosen := (data->>'role')::integer;
+    if not exists(select 1 from multtown.wallet where id=chosen and session is not null) then
+      raise exception 'Роль ещё не занята.';
+    end if;
+    if data->>'result' is null then
+      delete from multtown.goal_result where wallet=chosen;
+    else
+      insert into multtown.goal_result (wallet,result) values (chosen,data->>'result')
+      on conflict (wallet) do update set result=excluded.result;
+    end if;
+    return '{}'::jsonb;
+  end if;
   if op='recover' then
     if credential is null or host or me is not null then raise exception 'Откройте игру в браузере без действующей роли.'; end if;
     family := lower(btrim(data->>'surname'));
@@ -109,6 +135,7 @@ begin
   if op = 'state' then
     return jsonb_build_object(
       'spec', (select coalesce(jsonb_agg(f),'[]') from jsonb_array_elements(wheel_docs) f where host or (f->>'owner')::integer=me),
+      'goals',case when host then (select coalesce(jsonb_object_agg(wallet,result),'{}') from multtown.goal_result) end,
       'recovery',case when host then (select coalesce(jsonb_agg(jsonb_build_object('id',id,'name',name,'surname',surname,'code',recovery_pin) order by id),'[]')
         from multtown.wallet where session is not null)
         else (select to_jsonb(recovery_pin) from multtown.wallet where id=me) end,
