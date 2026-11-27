@@ -61,6 +61,17 @@ insert into multtown.wallet (id,name,balance) values
   (25,'Рита Реплика',50),(26,'Лола Люрекс',50),(27,'Марк Флип',30)
 on conflict do nothing;
 
+create or replace view multtown.draw_pool as
+  select id, name
+  from (
+    select id, name, dense_rank() over (
+      order by case when id between 1 and 13 then 1 when id between 14 and 17 then 3 else 2 end
+    ) as tier
+    from multtown.wallet
+    where session is null
+  ) ranked
+  where tier = 1;
+
 create or replace function public.multtown_bank(action text, credential uuid default null, payload jsonb default '{}')
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -93,7 +104,7 @@ begin
       raise exception 'Введите фамилию (до 60 символов).';
     end if;
     update multtown.wallet set session = credential, surname = player_surname, joined_at = clock_timestamp()
-    where id = (select id from multtown.wallet where session is null order by random() limit 1)
+    where id = (select id from multtown.draw_pool order by random() limit 1)
     returning * into me;
     if not found then raise exception 'Все роли уже распределены.'; end if;
     return jsonb_build_object('name',me.name);
@@ -192,6 +203,7 @@ begin
     'closed',game_row.closed,
     'wheel',true,
     'available',(select count(*) from multtown.wallet where session is null),
+    'drawPool',(select coalesce(jsonb_agg(jsonb_build_object('id',id,'name',name) order by id),'[]'::jsonb) from multtown.draw_pool),
     'roster',case when me.id is not null then coalesce((select jsonb_agg(jsonb_build_object('id',id,'name',name,'surname',surname) order by id) from multtown.wallet where session is not null),'[]'::jsonb) end,
     'player',case when me.id is not null then jsonb_build_object('id',me.id,'name',me.name,'balance',me.balance) end,
     'story',(select body from multtown.story where wallet=me.id),
